@@ -14,7 +14,7 @@ env:
 jobs:
   create-linear-ticket:
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, wolverine, opencve]
+    runs-on: ubuntu-latest
     steps:
       - name: Create Linear issue with Security Review label
         env:
