@@ -13,7 +13,11 @@ env:
 
 jobs:
   create-linear-ticket:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      vars.LINEAR_TEAM_ID != '' &&
+      vars.LINEAR_SECURITY_REVIEW_LABEL_ID != '' &&
+      vars.LINEAR_TODO_STATE_ID != ''
     runs-on: ubuntu-latest
     steps:
       - name: Create Linear issue with Security Review label

@@ -325,19 +325,22 @@ class AutomationRunResult(BaseModel):
         return details.get("summary") or "—"
 
 
+CVE_TRACKER_STATUS_CHOICES = [
+    ("to_evaluate", "To evaluate"),
+    ("pending_review", "Pending review"),
+    ("analysis_in_progress", "Analysis in progress"),
+    ("remediation_in_progress", "Remediation in progress"),
+    ("evaluated", "Evaluated"),
+    ("resolved", "Resolved"),
+    ("not_applicable", "Not applicable"),
+    ("risk_accepted", "Risk accepted"),
+]
+
+
 class CveTracker(BaseModel):
     """Track CVE assignments and status within projects"""
 
-    STATUS_CHOICES = [
-        ("to_evaluate", "To evaluate"),
-        ("pending_review", "Pending review"),
-        ("analysis_in_progress", "Analysis in progress"),
-        ("remediation_in_progress", "Remediation in progress"),
-        ("evaluated", "Evaluated"),
-        ("resolved", "Resolved"),
-        ("not_applicable", "Not applicable"),
-        ("risk_accepted", "Risk accepted"),
-    ]
+    STATUS_CHOICES = CVE_TRACKER_STATUS_CHOICES
 
     status = models.CharField(
         max_length=32, choices=STATUS_CHOICES, null=True, blank=True
@@ -423,3 +426,47 @@ class CveComment(BaseModel):
     class Meta:
         db_table = "opencve_cve_comments"
         ordering = ["created_at"]
+
+
+class CveTrackerEvent(BaseModel):
+    """Immutable idempotency ledger for SecOps tracking writebacks."""
+
+    event_id = models.CharField(max_length=128)
+    status = models.CharField(max_length=32, choices=CVE_TRACKER_STATUS_CHOICES)
+    case_url = models.URLField(max_length=500)
+    payload_hash = models.CharField(max_length=64)
+
+    project = models.ForeignKey(
+        Project, on_delete=models.CASCADE, related_name="cve_tracking_events"
+    )
+    cve = models.ForeignKey(
+        "cves.Cve", on_delete=models.CASCADE, related_name="tracking_events"
+    )
+    author = models.ForeignKey(
+        "users.User",
+        on_delete=models.PROTECT,
+        related_name="cve_tracking_events",
+    )
+    comment = models.ForeignKey(
+        CveComment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tracking_events",
+    )
+
+    class Meta:
+        db_table = "opencve_cve_tracker_events"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "cve", "event_id"],
+                name="ix_unique_project_cve_event",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["project", "cve", "created_at"],
+                name="idx_cveevt_proj_created",
+            ),
+            models.Index(fields=["event_id"], name="idx_cveevt_event_id"),
+        ]

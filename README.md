@@ -75,6 +75,11 @@ Use the hosted version at [https://www.opencve.io](https://www.opencve.io) — n
 ### 🐳 Self-Hosted
 Run OpenCVE on your own infrastructure using Docker. See the [installation guide](https://docs.opencve.io/deployment/) for more details.
 
+### SecOps Tracking Writeback (MDSoftware-DE Fork)
+
+The authenticated, idempotent project-CVE writeback API is documented in
+[docs/secops-tracking-writeback.md](docs/secops-tracking-writeback.md).
+
 ## Screenshots
 
 <p align="center">
