@@ -107,6 +107,18 @@ Tracking comments pass through Django's escaping, `urlize`, and line-break
 filters. The central HTTPS GitHub issue is clickable while HTML, script tags,
 attributes, and `javascript:` text remain escaped or non-clickable.
 
+## Production artifact
+
+The GitHub-hosted `Release OpenCVE web image` workflow builds the web image
+from the exact checked-out commit. Pull requests build and test both image
+stages without publishing. A push to `release/md-secops-v3.0.0` publishes only
+`ghcr.io/mdsoftware-de/opencve-web:sha-<full-commit>` and records the immutable
+registry digest in the workflow summary. No `latest` tag is produced.
+
+Production must pin `ghcr.io/mdsoftware-de/opencve-web:<digest>`, not the
+branch or SHA tag. The test stage applies all migrations and executes the SecOps
+API and UI contract tests against PostgreSQL before publication.
+
 ## Upgrade
 
 1. Back up the OpenCVE PostgreSQL database and verify the backup artifact.
