@@ -188,11 +188,14 @@ def test_tracking_accepts_every_tracker_status(tracking_case, status):
         cve=tracking_case.cve,
     )
     assert tracker.status == status
-    assert CveComment.objects.filter(
-        project=tracking_case.project,
-        cve=tracking_case.cve,
-        author=tracking_case.user,
-    ).count() == 1
+    assert (
+        CveComment.objects.filter(
+            project=tracking_case.project,
+            cve=tracking_case.cve,
+            author=tracking_case.user,
+        ).count()
+        == 1
+    )
 
 
 @pytest.mark.django_db
@@ -211,10 +214,13 @@ def test_tracking_is_idempotent_and_detects_event_conflicts(tracking_case):
     assert retry.status_code == 200
     assert retry.json() == {**first.json(), "created": False}
     assert conflict.status_code == 409
-    assert CveComment.objects.filter(
-        project=tracking_case.project,
-        cve=tracking_case.cve,
-    ).count() == 1
+    assert (
+        CveComment.objects.filter(
+            project=tracking_case.project,
+            cve=tracking_case.cve,
+        ).count()
+        == 1
+    )
 
     tracker = CveTracker.objects.get(
         project=tracking_case.project,
@@ -223,10 +229,13 @@ def test_tracking_is_idempotent_and_detects_event_conflicts(tracking_case):
     assert tracker.status == "resolved"
 
     event_model = tracker.cve.tracking_events.model
-    assert event_model.objects.filter(
-        project=tracking_case.project,
-        cve=tracking_case.cve,
-    ).count() == 1
+    assert (
+        event_model.objects.filter(
+            project=tracking_case.project,
+            cve=tracking_case.cve,
+        ).count()
+        == 1
+    )
 
     current = get_tracking(tracking_case)
     assert current.status_code == 200
@@ -328,7 +337,10 @@ def test_tracking_rolls_back_status_when_comment_creation_fails(tracking_case):
 
     tracker.refresh_from_db()
     assert tracker.status == "pending_review"
-    assert CveComment.objects.filter(
-        project=tracking_case.project,
-        cve=tracking_case.cve,
-    ).count() == 0
+    assert (
+        CveComment.objects.filter(
+            project=tracking_case.project,
+            cve=tracking_case.cve,
+        ).count()
+        == 0
+    )
