@@ -146,19 +146,47 @@ def test_tracking_rejects_unknown_nested_resources(
 
 
 @pytest.mark.django_db
-def test_tracking_rejects_unsubscribed_cve(tracking_case, create_project):
+def test_tracking_allows_explicit_cve_while_project_list_stays_empty(
+    tracking_case,
+    create_project,
+):
     project = create_project(
-        name="unsubscribed",
+        name="secops-canary",
         organization=tracking_case.organization,
-        vendors=["vendor-not-present-on-cve"],
+        vendors=[],
+        products=[],
+    )
+    url = tracking_url(tracking_case, project=project.name)
+
+    before = tracking_case.client.get(
+        project_cve_list_url(
+            SimpleNamespace(
+                organization=tracking_case.organization,
+                project=project,
+            )
+        ),
+        HTTP_AUTHORIZATION=f"Bearer {tracking_case.token}",
+    )
+    current = get_tracking(tracking_case, url=url)
+    written = patch_tracking(tracking_case, tracking_payload(), url=url)
+    after = tracking_case.client.get(
+        project_cve_list_url(
+            SimpleNamespace(
+                organization=tracking_case.organization,
+                project=project,
+            )
+        ),
+        HTTP_AUTHORIZATION=f"Bearer {tracking_case.token}",
     )
 
-    response = get_tracking(
-        tracking_case,
-        url=tracking_url(tracking_case, project=project.name),
-    )
-
-    assert response.status_code == 404
+    assert before.status_code == 200
+    assert before.json()["count"] == 0
+    assert current.status_code == 200
+    assert current.json()["cve_id"] == tracking_case.cve.cve_id
+    assert written.status_code == 200
+    assert written.json()["created"] is True
+    assert after.status_code == 200
+    assert after.json()["count"] == 0
 
 
 @pytest.mark.django_db
