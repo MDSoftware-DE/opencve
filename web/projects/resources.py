@@ -116,8 +116,8 @@ class ProjectCveViewSet(viewsets.GenericViewSet, mixins.ListModelMixin):
 
     @action(detail=True, methods=["get", "patch"])
     def tracking(self, request, **kwargs):
-        cve = self.get_object()
         project = self._get_project()
+        cve = get_object_or_404(Cve, cve_id=self.kwargs["cve_id"])
 
         if request.method == "GET":
             tracker = CveTracker.objects.filter(project=project, cve=cve).first()
