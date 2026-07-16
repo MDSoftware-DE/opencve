@@ -62,6 +62,13 @@ def tracking_url(case, *, organization=None, project=None, cve_id=None):
     )
 
 
+def project_cve_list_url(case):
+    return (
+        f"/api/organizations/{case.organization.name}/projects/"
+        f"{case.project.name}/cve"
+    )
+
+
 def tracking_payload(
     *,
     event_id="ops-triage:CVE-2021-44228:github:42:resolved:v1",
@@ -164,6 +171,45 @@ def test_tracking_get_without_events_returns_current_empty_state(tracking_case):
         "status": None,
         "case_url": None,
         "event_id": None,
+    }
+
+
+@pytest.mark.django_db
+def test_project_cve_list_filters_by_utc_updated_watermark(
+    tracking_case,
+    create_cve,
+):
+    create_cve("CVE-2022-22965")
+
+    response = tracking_case.client.get(
+        project_cve_list_url(tracking_case),
+        {"updated__gte": "2024-07-28T00:00:00Z"},
+        HTTP_AUTHORIZATION=f"Bearer {tracking_case.token}",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert [item["cve_id"] for item in response.json()["results"]] == ["CVE-2022-22965"]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "watermark",
+    ["not-a-timestamp", "2024-07-28T00:00:00"],
+)
+def test_project_cve_list_rejects_invalid_updated_watermark(
+    tracking_case,
+    watermark,
+):
+    response = tracking_case.client.get(
+        project_cve_list_url(tracking_case),
+        {"updated__gte": watermark},
+        HTTP_AUTHORIZATION=f"Bearer {tracking_case.token}",
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "updated__gte": ["Must be a timezone-aware ISO 8601 timestamp."]
     }
 
 

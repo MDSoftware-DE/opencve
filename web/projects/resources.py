@@ -3,9 +3,10 @@ import json
 
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_datetime
 from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from cves.models import Cve
@@ -97,11 +98,21 @@ class ProjectCveViewSet(viewsets.GenericViewSet, mixins.ListModelMixin):
         vendors = project.subscriptions["vendors"] + project.subscriptions["products"]
         if not vendors:
             return Cve.objects.none()
-        return (
+        queryset = (
             Cve.objects.order_by("-updated_at")
             .filter(vendors__has_any_keys=vendors)
             .all()
         )
+        watermark = self.request.query_params.get("updated__gte")
+        if watermark is None:
+            return queryset
+
+        parsed_watermark = parse_datetime(watermark)
+        if parsed_watermark is None or parsed_watermark.utcoffset() is None:
+            raise ValidationError(
+                {"updated__gte": ["Must be a timezone-aware ISO 8601 timestamp."]}
+            )
+        return queryset.filter(updated_at__gte=parsed_watermark)
 
     @action(detail=True, methods=["get", "patch"])
     def tracking(self, request, **kwargs):
