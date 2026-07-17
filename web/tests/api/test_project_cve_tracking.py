@@ -114,13 +114,15 @@ def test_tracking_identical_retry_is_idempotent_and_conflict_is_explicit(
 
 
 @pytest.mark.django_db
-def test_tracking_is_organization_scoped_and_requires_subscription(
+def test_tracking_is_organization_scoped_and_rejects_unmatched_subscription(
     tracking_context, create_organization, create_project
 ):
     other = create_organization(name="other")
     create_project(name="secops-fleet", organization=other, vendors=["siemens"])
     unsubscribed = create_project(
-        name="unsubscribed", organization=tracking_context["organization"]
+        name="unsubscribed",
+        organization=tracking_context["organization"],
+        vendors=["unrelated-vendor"],
     )
 
     cross_org = tracking_context["client"].patch(
@@ -142,6 +144,30 @@ def test_tracking_is_organization_scoped_and_requires_subscription(
     assert cross_org.status_code == 404
     assert not_subscribed.status_code == 404
     assert unauthenticated.status_code == 401
+
+
+@pytest.mark.django_db
+def test_tracking_accepts_explicit_only_empty_subscription_project(
+    tracking_context, create_project
+):
+    explicit = create_project(
+        name="secops-canary",
+        organization=tracking_context["organization"],
+    )
+
+    response = tracking_context["client"].patch(
+        _url(project=explicit.name),
+        _payload(event_id="ops-triage:explicit-canary"),
+        content_type="application/json",
+        **tracking_context["headers"],
+    )
+
+    assert response.status_code == 200
+    assert CveTracker.objects.filter(
+        project=explicit,
+        cve=tracking_context["cve"],
+        status="analysis_in_progress",
+    ).exists()
 
 
 @pytest.mark.django_db
