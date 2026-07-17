@@ -48,7 +48,9 @@ CVE_LIST_QUERY_PARAMS = [
     ),
 ]
 
-CVE_RETRIEVE_INCLUDE_FIELDS = frozenset({"nvd_cpe_configurations", "references"})
+CVE_RETRIEVE_INCLUDE_FIELDS = frozenset(
+    {"cve_affected", "nvd_cpe_configurations", "references"}
+)
 
 CVE_RETRIEVE_QUERY_PARAMS = [
     OpenApiParameter(
@@ -57,7 +59,7 @@ CVE_RETRIEVE_QUERY_PARAMS = [
         location=OpenApiParameter.QUERY,
         required=False,
         description=(
-            "Comma-separated extra fields: `nvd_cpe_configurations`, `references`."
+            "Comma-separated extra fields: `cve_affected`, `nvd_cpe_configurations`, `references`."
         ),
     ),
 ]

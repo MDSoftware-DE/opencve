@@ -159,6 +159,41 @@ def test_cve_retrieve_with_nvd_cpe_configurations_include(
 
 
 @pytest.mark.django_db
+@patch("cves.models.Cve.mitre_json", new_callable=PropertyMock)
+def test_cve_retrieve_with_cve_affected_include(
+    mock_mitre_json, client, read_token, create_cve
+):
+    """Include CVE v5 affected products and version ranges when requested."""
+    affected = [
+        {
+            "vendor": "n8n",
+            "product": "n8n",
+            "defaultStatus": "unaffected",
+            "versions": [
+                {
+                    "version": "0",
+                    "status": "affected",
+                    "lessThan": "2.28.1",
+                    "versionType": "semver",
+                }
+            ],
+        }
+    ]
+    mock_mitre_json.return_value = {"containers": {"cna": {"affected": affected}}}
+    create_cve("CVE-2021-44228")
+
+    detail_url = cve_detail_url("CVE-2021-44228")
+    response = client.get(
+        f"{detail_url}?include=cve_affected",
+        **bearer(read_token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["cve_affected"] == affected
+    assert mock_mitre_json.call_count == 1
+
+
+@pytest.mark.django_db
 def test_cve_retrieve_rejects_unknown_include(client, read_token, create_cve):
     """Reject unknown include values on CVE detail."""
     create_cve("CVE-2021-44228")
@@ -174,7 +209,7 @@ def test_cve_retrieve_rejects_unknown_include(client, read_token, create_cve):
         details={
             "include": (
                 "Unknown include value(s): unknown_field. "
-                "Allowed values: nvd_cpe_configurations, references."
+                "Allowed values: cve_affected, nvd_cpe_configurations, references."
             )
         },
     )

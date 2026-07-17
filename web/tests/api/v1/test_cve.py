@@ -156,6 +156,59 @@ def test_get_cve_with_nvd_cpe_configurations_include_fallback_to_empty_list(
 
 
 @pytest.mark.django_db
+@patch("cves.models.Cve.mitre_json", new_callable=PropertyMock)
+def test_get_cve_with_and_without_cve_affected_include(
+    mock_mitre_json, create_cve, auth_client
+):
+    affected = [
+        {
+            "vendor": "grafana",
+            "product": "loki",
+            "defaultStatus": "unaffected",
+            "versions": [
+                {
+                    "version": "0",
+                    "status": "affected",
+                    "lessThan": "3.7.0",
+                    "versionType": "semver",
+                }
+            ],
+        }
+    ]
+    mock_mitre_json.return_value = {"containers": {"cna": {"affected": affected}}}
+    create_cve("CVE-2021-44228")
+    client = auth_client()
+    detail_url = reverse("cve-detail", kwargs={"cve_id": "CVE-2021-44228"})
+
+    response = client.get(detail_url)
+    assert response.status_code == 200
+    assert "cve_affected" not in response.json()
+    assert mock_mitre_json.call_count == 0
+
+    response = client.get(f"{detail_url}?include=cve_affected")
+    assert response.status_code == 200
+    assert response.json()["cve_affected"] == affected
+    assert mock_mitre_json.call_count == 1
+
+
+@pytest.mark.django_db
+@patch("cves.models.Cve.mitre_json", new_callable=PropertyMock)
+def test_get_cve_with_cve_affected_include_fallback_to_empty_list(
+    mock_mitre_json, create_cve, auth_client
+):
+    mock_mitre_json.return_value = {}
+    create_cve("CVE-2021-44228")
+    client = auth_client()
+    detail_url = reverse("cve-detail", kwargs={"cve_id": "CVE-2021-44228"})
+
+    response = client.get(f"{detail_url}?include=cve_affected")
+
+    assert response.status_code == 200
+    assert response.json()["cve_affected"] == []
+    assert mock_mitre_json.call_count == 1
+
+
+@pytest.mark.django_db
 def test_list_cves_with_tag_filter_organization_token(
     create_cve, create_user, create_organization, client
 ):
