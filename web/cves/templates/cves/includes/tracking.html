@@ -69,7 +69,7 @@
                                                     </div>
                                                 </div>
                                                 <div class="project-comment-body">
-                                                    {{ comment.body|linebreaksbr }}
+                                                    {{ comment.body|urlize|linebreaksbr }}
                                                 </div>
                                             </div>
                                             {% if replies %}
@@ -97,7 +97,7 @@
                                                                     </div>
                                                                 </div>
                                                                 <div class="project-comment-body">
-                                                                    {{ reply.body|linebreaksbr }}
+                                                                    {{ reply.body|urlize|linebreaksbr }}
                                                                 </div>
                                                             </div>
                                                         </li>

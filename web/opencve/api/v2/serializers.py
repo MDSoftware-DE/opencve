@@ -13,6 +13,7 @@ from projects.models import (
     AutomationExecution,
     AutomationRunResult,
     CveTracker,
+    CveTrackerEvent,
     Notification,
     Project,
 )
@@ -42,6 +43,8 @@ from opencve.api.v2.openapi import (
     PRODUCT_LIST_ITEM_EXAMPLE,
     WEAKNESS_LIST_ITEM_EXAMPLE,
 )
+
+GITHUB_CASE_URL_PREFIX = "https://github.com/MDSoftware-DE/"
 
 
 @extend_schema_serializer(
@@ -121,6 +124,38 @@ class TrackerSerializer(serializers.ModelSerializer):
         if not obj.assignee_id:
             return None
         return {"email": obj.assignee.email}
+
+
+class CveTrackingWriteSerializer(serializers.Serializer):
+    event_id = serializers.CharField(max_length=128)
+    status = serializers.ChoiceField(choices=CveTracker.STATUS_CHOICES)
+    comment = serializers.CharField(max_length=10000)
+    case_url = serializers.URLField(max_length=500)
+
+    def validate_case_url(self, value):
+        if not value.startswith(GITHUB_CASE_URL_PREFIX):
+            raise serializers.ValidationError(
+                "case_url must reference an MDSoftware-DE GitHub issue"
+            )
+        relative = value[len(GITHUB_CASE_URL_PREFIX) :]
+        parts = relative.split("/")
+        if (
+            len(parts) != 3
+            or not parts[0]
+            or parts[1] != "issues"
+            or not parts[2].isdigit()
+            or int(parts[2]) <= 0
+        ):
+            raise serializers.ValidationError(
+                "case_url must reference an MDSoftware-DE GitHub issue"
+            )
+        return value
+
+
+class CveTrackerEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CveTrackerEvent
+        fields = ["event_id", "status", "case_url", "created_at"]
 
 
 @extend_schema_serializer(component_name="ApiProjectCve")

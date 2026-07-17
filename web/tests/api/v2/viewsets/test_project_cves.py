@@ -49,6 +49,45 @@ def test_list_filters_cves_by_subscriptions(
 
 
 @pytest.mark.django_db
+def test_list_filters_inclusive_timezone_aware_updated_gte(
+    client, api_context, write_token, create_project, create_cve
+):
+    _user, organization, _create_token = api_context
+    create_project(name="prod", organization=organization, vendors=["cisco"])
+    create_cve("CVE-2021-44228")
+    create_cve("CVE-2022-22965")
+
+    response = client.get(
+        project_cves_url(),
+        {"updated__gte": "2024-07-31T20:10:19Z"},
+        **bearer(write_token),
+    )
+
+    assert response.status_code == 200
+    assert [item["cve_id"] for item in response.json()["results"]] == ["CVE-2022-22965"]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "value",
+    ["not-a-date", "2024-07-31T20:10:19"],
+)
+def test_list_rejects_invalid_or_naive_updated_gte(
+    client, api_context, write_token, create_project, value
+):
+    _user, organization, _create_token = api_context
+    create_project(name="prod", organization=organization, vendors=["cisco"])
+
+    response = client.get(
+        project_cves_url(),
+        {"updated__gte": value},
+        **bearer(write_token),
+    )
+
+    assert_v2_error(response, "validation_error", status_code=400)
+
+
+@pytest.mark.django_db
 def test_retrieve_cve_not_in_subscriptions_returns_404(
     client, api_context, write_token, create_project, create_cve
 ):
