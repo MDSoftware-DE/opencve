@@ -1,0 +1,46 @@
+FROM python:3.11-slim-bookworm AS base
+
+ARG VCS_REF="unknown"
+LABEL org.opencontainers.image.source="https://github.com/MDSoftware-DE/opencve"
+LABEL org.opencontainers.image.revision="${VCS_REF}"
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/opencve/web
+
+FROM base AS builder
+
+RUN python3 -m venv /app/venv
+ENV PATH="/app/venv/bin:${PATH}"
+
+COPY requirements.txt /tmp/requirements.txt
+RUN python3 -m pip install --upgrade pip \
+    && python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+FROM builder AS test
+
+COPY tests/requirements.txt /tmp/test-requirements.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/test-requirements.txt
+
+COPY . /app/opencve/web/
+RUN cp opencve/conf/settings.py.example opencve/conf/settings.py
+
+ENTRYPOINT []
+CMD ["python", "manage.py", "check"]
+
+FROM base AS runtime
+
+COPY --from=builder /app/venv /app/venv
+ENV PATH="/app/venv/bin:${PATH}"
+
+COPY . /app/opencve/web/
+
+EXPOSE 8000
+
+ENTRYPOINT ["gunicorn", "opencve.wsgi"]
+CMD ["-b", "0.0.0.0:8000"]
