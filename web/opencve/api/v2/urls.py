@@ -119,5 +119,10 @@ urlpatterns = (
             ),
             name="v2-organization-project-cve-detail",
         ),
+        path(
+            "organizations/<str:organization_name>/projects/<str:project_name>/cves/<str:cve_id>/tracking",
+            ProjectCveDetailViewSet.as_view({"get": "tracking", "patch": "tracking"}),
+            name="v2-organization-project-cve-tracking",
+        ),
     ]
 )

@@ -40,6 +40,7 @@ You can subscribe to products, receive alerts, analyze changes, and collaborate 
 
 ### 🔁 Track Changes and Generate Reports
 - Access the complete change history of CVEs: scores, descriptions, references, etc.
+- [Write project CVE status and case history through the authenticated tracking API.](docs/secops-tracking-api.md)
 - Generate daily reports by project to stay ahead.
 - Get AI-powered report summaries to see priorities and immediate actions at a glance.
 

@@ -423,3 +423,44 @@ class CveComment(BaseModel):
     class Meta:
         db_table = "opencve_cve_comments"
         ordering = ["created_at"]
+
+
+class CveTrackerEvent(BaseModel):
+    """Immutable idempotency ledger for external CVE tracking updates."""
+
+    event_id = models.CharField(max_length=128)
+    status = models.CharField(max_length=32, choices=CveTracker.STATUS_CHOICES)
+    case_url = models.URLField(max_length=500)
+    payload_hash = models.CharField(max_length=64)
+
+    project = models.ForeignKey(
+        Project, on_delete=models.CASCADE, related_name="cve_tracker_events"
+    )
+    cve = models.ForeignKey(
+        "cves.Cve", on_delete=models.CASCADE, related_name="tracker_events"
+    )
+    author = models.ForeignKey(
+        "users.User", on_delete=models.PROTECT, related_name="cve_tracker_events"
+    )
+    comment = models.ForeignKey(
+        CveComment,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="tracking_events",
+    )
+
+    class Meta:
+        db_table = "opencve_cve_tracker_events"
+        ordering = ["created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "cve", "event_id"],
+                name="ix_unique_project_cve_event",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["project", "cve", "created_at"],
+                name="ix_tracker_event_history",
+            )
+        ]

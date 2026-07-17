@@ -1,5 +1,8 @@
+import hashlib
+import json
 import secrets
 
+from django.db import transaction
 from django.db.models import Exists, OuterRef, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from drf_spectacular.helpers import forced_singular_serializer
@@ -54,6 +57,8 @@ from opencve.api.v2.serializers import (
     AutomationSerializer,
     AutomationWriteSerializer,
     CveListSerializer,
+    CveTrackerEventSerializer,
+    CveTrackingWriteSerializer,
     CveTrackerUpdateSerializer,
     NotificationSerializer,
     NotificationWriteSerializer,
@@ -71,6 +76,8 @@ from projects.models import (
     AutomationExecution,
     AutomationRunResult,
     CveTracker,
+    CveComment,
+    CveTrackerEvent,
     Notification,
     Project,
 )
@@ -433,6 +440,7 @@ class ProjectCveDetailViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ViewSet
     scope_map = {
         "retrieve": APIScope.PROJECTS_READ,
         "partial_update": APIScope.TRACKER_WRITE,
+        "tracking": APIScope.TRACKER_WRITE,
     }
 
     def retrieve(self, request, organization_name=None, project_name=None, cve_id=None):
@@ -490,6 +498,93 @@ class ProjectCveDetailViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ViewSet
 
         context = {"trackers": {cve.id: tracker} if tracker else {}}
         return Response(ProjectCveSerializer(cve, context=context).data)
+
+    @staticmethod
+    def _tracking_acknowledgement(event, created):
+        return {
+            "cve_id": event.cve.cve_id,
+            "status": event.status,
+            "case_url": event.case_url,
+            "event_id": event.event_id,
+            "created": created,
+        }
+
+    def tracking(self, request, organization_name=None, project_name=None, cve_id=None):
+        project = self.get_project()
+        cve = get_object_or_404(Cve, cve_id=cve_id)
+        if not _cve_matches_project_subscriptions(project, cve):
+            raise NotFound()
+
+        if request.method == "GET":
+            tracker = CveTracker.objects.filter(project=project, cve=cve).first()
+            events = CveTrackerEvent.objects.filter(project=project, cve=cve).order_by(
+                "-created_at"
+            )[:100]
+            return Response(
+                {
+                    "cve_id": cve.cve_id,
+                    "status": tracker.status if tracker else None,
+                    "events": CveTrackerEventSerializer(events, many=True).data,
+                }
+            )
+
+        serializer = CveTrackingWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        author = getattr(request, "api_actor", None)
+        if author is None:
+            return Response(
+                {"detail": "Tracking updates require an attributable user."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        payload_hash = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+        with transaction.atomic():
+            Project.objects.select_for_update().get(pk=project.pk)
+            existing = (
+                CveTrackerEvent.objects.select_for_update()
+                .filter(project=project, cve=cve, event_id=payload["event_id"])
+                .first()
+            )
+            if existing:
+                if existing.payload_hash != payload_hash:
+                    return Response(
+                        {"detail": "event_id already exists with another payload."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                return Response(self._tracking_acknowledgement(existing, False))
+
+            tracker = (
+                CveTracker.objects.select_for_update()
+                .filter(project=project, cve=cve)
+                .first()
+            )
+            if tracker is None:
+                tracker = CveTracker(project=project, cve=cve)
+            tracker.status = payload["status"]
+            tracker.save()
+
+            comment = CveComment.objects.create(
+                project=project,
+                cve=cve,
+                author=author,
+                body=payload["comment"],
+            )
+            event = CveTrackerEvent.objects.create(
+                project=project,
+                cve=cve,
+                author=author,
+                comment=comment,
+                event_id=payload["event_id"],
+                status=payload["status"],
+                case_url=payload["case_url"],
+                payload_hash=payload_hash,
+            )
+
+        return Response(self._tracking_acknowledgement(event, True))
 
 
 @extend_schema(parameters=ORG_PROJECT_PATH_PARAMS, tags=[PROJECTS_TAG])
