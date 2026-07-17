@@ -5,6 +5,8 @@ import secrets
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Prefetch, Q
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from drf_spectacular.helpers import forced_singular_serializer
 from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import mixins, status, viewsets
@@ -361,6 +363,15 @@ class ProjectCveViewSet(
             .filter(vendors__has_any_keys=vendors)
             .all()
         )
+
+        if "updated__gte" in self.request.query_params:
+            raw_updated_gte = self.request.query_params.get("updated__gte", "")
+            updated_gte = parse_datetime(raw_updated_gte)
+            if updated_gte is None or timezone.is_naive(updated_gte):
+                raise ValidationError(
+                    {"updated__gte": ("Must be an ISO 8601 timezone-aware datetime.")}
+                )
+            queryset = queryset.filter(updated_at__gte=updated_gte)
 
         # Optional filters: tracker status, assignee email
         status_filter = self.request.query_params.get("status")

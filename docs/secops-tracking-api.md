@@ -57,3 +57,10 @@ returns HTTP 409.
 A GET request returns the current project tracker status and the latest 100
 idempotency events. Secrets and comment bodies are not returned by this
 endpoint.
+
+## Incremental project polling
+
+Use `GET /api/v2/organizations/{organization}/projects/{project}/cves` with
+`updated__gte=<ISO-8601 datetime>` to poll a project incrementally. The
+boundary is inclusive and must contain a timezone, for example
+`2026-07-17T01:00:00Z`. Invalid or timezone-naive values return HTTP 400.
