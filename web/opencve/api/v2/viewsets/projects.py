@@ -523,7 +523,8 @@ class ProjectCveDetailViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ViewSet
     def tracking(self, request, organization_name=None, project_name=None, cve_id=None):
         project = self.get_project()
         cve = get_object_or_404(Cve, cve_id=cve_id)
-        if not _cve_matches_project_subscriptions(project, cve):
+        subscriptions = _project_subscription_vendor_keys(project)
+        if subscriptions and not _cve_matches_project_subscriptions(project, cve):
             raise NotFound()
 
         if request.method == "GET":
