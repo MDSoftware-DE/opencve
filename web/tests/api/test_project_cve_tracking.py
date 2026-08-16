@@ -57,6 +57,147 @@ def _payload(status="analysis_in_progress", event_id="ops-triage:event-1"):
     }
 
 
+def _drift_project_subscriptions(project):
+    project.subscriptions = {
+        "vendors": ["unrelated-vendor"],
+        "products": [],
+    }
+    project.save(update_fields=["subscriptions"])
+
+
+@pytest.mark.django_db
+def test_tracking_get_keeps_existing_binding_after_subscription_drift(
+    tracking_context,
+):
+    created = tracking_context["client"].patch(
+        _url(),
+        _payload(),
+        content_type="application/json",
+        **tracking_context["headers"],
+    )
+    assert created.status_code == 200
+    assert created.json()["created"] is True
+
+    _drift_project_subscriptions(tracking_context["project"])
+
+    response = tracking_context["client"].get(
+        _url(),
+        **tracking_context["headers"],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["cve_id"] == "CVE-2021-44228"
+    assert response.json()["status"] == "analysis_in_progress"
+    assert response.json()["events"] == [
+        {
+            "event_id": "ops-triage:event-1",
+            "status": "analysis_in_progress",
+            "case_url": CASE_URL,
+            "created_at": response.json()["events"][0]["created_at"],
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_tracking_patch_keeps_existing_binding_after_subscription_drift(
+    tracking_context,
+):
+    initial = tracking_context["client"].patch(
+        _url(),
+        _payload(),
+        content_type="application/json",
+        **tracking_context["headers"],
+    )
+    assert initial.status_code == 200
+
+    _drift_project_subscriptions(tracking_context["project"])
+    resolved = _payload(status="resolved", event_id="ops-triage:event-2")
+
+    first = tracking_context["client"].patch(
+        _url(),
+        resolved,
+        content_type="application/json",
+        **tracking_context["headers"],
+    )
+    retry = tracking_context["client"].patch(
+        _url(),
+        resolved,
+        content_type="application/json",
+        **tracking_context["headers"],
+    )
+
+    assert first.status_code == 200
+    assert first.json() == {
+        "cve_id": "CVE-2021-44228",
+        "status": "resolved",
+        "case_url": CASE_URL,
+        "event_id": "ops-triage:event-2",
+        "created": True,
+    }
+    assert retry.status_code == 200
+    assert retry.json()["created"] is False
+    tracker = CveTracker.objects.get(
+        project=tracking_context["project"],
+        cve=tracking_context["cve"],
+    )
+    assert tracker.status == "resolved"
+    assert (
+        CveTrackerEvent.objects.filter(
+            project=tracking_context["project"],
+            cve=tracking_context["cve"],
+        ).count()
+        == 2
+    )
+    assert (
+        CveComment.objects.filter(
+            project=tracking_context["project"],
+            cve=tracking_context["cve"],
+        ).count()
+        == 2
+    )
+
+
+@pytest.mark.django_db
+def test_tracking_binding_in_another_project_does_not_grant_access(
+    tracking_context, create_project
+):
+    owner_write = tracking_context["client"].patch(
+        _url(),
+        _payload(),
+        content_type="application/json",
+        **tracking_context["headers"],
+    )
+    assert owner_write.status_code == 200
+
+    unrelated = create_project(
+        name="unrelated",
+        organization=tracking_context["organization"],
+        vendors=["unrelated-vendor"],
+    )
+    get_response = tracking_context["client"].get(
+        _url(project=unrelated.name),
+        **tracking_context["headers"],
+    )
+    patch_response = tracking_context["client"].patch(
+        _url(project=unrelated.name),
+        _payload(event_id="ops-triage:unrelated"),
+        content_type="application/json",
+        **tracking_context["headers"],
+    )
+
+    assert get_response.status_code == 404
+    assert patch_response.status_code == 404
+    assert not CveTracker.objects.filter(
+        project=unrelated, cve=tracking_context["cve"]
+    ).exists()
+    assert not CveTrackerEvent.objects.filter(
+        project=unrelated, cve=tracking_context["cve"]
+    ).exists()
+    assert not CveComment.objects.filter(
+        project=unrelated, cve=tracking_context["cve"]
+    ).exists()
+
+
 @pytest.mark.django_db
 @pytest.mark.parametrize("status", STATUSES)
 def test_tracking_accepts_all_tracker_statuses(tracking_context, status):
