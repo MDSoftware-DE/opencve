@@ -141,14 +141,20 @@ def test_tracking_patch_keeps_existing_binding_after_subscription_drift(
         cve=tracking_context["cve"],
     )
     assert tracker.status == "resolved"
-    assert CveTrackerEvent.objects.filter(
-        project=tracking_context["project"],
-        cve=tracking_context["cve"],
-    ).count() == 2
-    assert CveComment.objects.filter(
-        project=tracking_context["project"],
-        cve=tracking_context["cve"],
-    ).count() == 2
+    assert (
+        CveTrackerEvent.objects.filter(
+            project=tracking_context["project"],
+            cve=tracking_context["cve"],
+        ).count()
+        == 2
+    )
+    assert (
+        CveComment.objects.filter(
+            project=tracking_context["project"],
+            cve=tracking_context["cve"],
+        ).count()
+        == 2
+    )
 
 
 @pytest.mark.django_db
