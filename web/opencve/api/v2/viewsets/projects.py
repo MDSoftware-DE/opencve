@@ -524,7 +524,11 @@ class ProjectCveDetailViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ViewSet
         project = self.get_project()
         cve = get_object_or_404(Cve, cve_id=cve_id)
         subscriptions = _project_subscription_vendor_keys(project)
-        if subscriptions and not _cve_matches_project_subscriptions(project, cve):
+        if (
+            subscriptions
+            and not _cve_matches_project_subscriptions(project, cve)
+            and not CveTracker.objects.filter(project=project, cve=cve).exists()
+        ):
             raise NotFound()
 
         if request.method == "GET":
