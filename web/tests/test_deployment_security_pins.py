@@ -3,6 +3,8 @@ import unittest
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+TEST_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "tests.yml"
+RELEASE_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "release-image.yml"
 
 
 class DeploymentSecurityPinTests(unittest.TestCase):
@@ -17,6 +19,15 @@ class DeploymentSecurityPinTests(unittest.TestCase):
         example = (REPOSITORY_ROOT / "docker" / "conf" / ".env.example").read_text()
 
         self.assertIn("POSTGRES_VERSION=15.19", example)
+
+    def test_ci_services_match_production_security_pins(self):
+        workflow = TEST_WORKFLOW.read_text()
+
+        self.assertEqual(workflow.count("image: postgres:15.19-alpine"), 2)
+        self.assertEqual(workflow.count("image: redis:8.8.1-alpine"), 1)
+        self.assertNotIn("image: redis/redis-stack", workflow)
+        release_workflow = RELEASE_WORKFLOW.read_text()
+        self.assertIn("image: postgres:15.19-alpine", release_workflow)
 
 
 if __name__ == "__main__":
