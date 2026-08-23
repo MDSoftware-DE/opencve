@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:15
+        image: postgres:15.19-alpine
         env:
           POSTGRES_USER: opencve
           POSTGRES_PASSWORD: opencve

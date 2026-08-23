@@ -25,7 +25,7 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     services:
       postgres:
-        image: postgres
+        image: postgres:15.19-alpine
         env:
           POSTGRES_USER: opencve
           POSTGRES_PASSWORD: opencve
@@ -70,7 +70,7 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     services:
       postgres_web:
-        image: postgres
+        image: postgres:15.19-alpine
         env:
           POSTGRES_USER: opencve
           POSTGRES_PASSWORD: opencve
@@ -82,7 +82,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis_web:
-        image: redis/redis-stack
+        image: redis:8.8.1-alpine
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
