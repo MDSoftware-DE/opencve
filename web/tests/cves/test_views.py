@@ -8,13 +8,16 @@ from django.urls import reverse
 from bs4 import BeautifulSoup
 from django.test.client import RequestFactory
 from django.contrib.auth.models import AnonymousUser
+from django.utils.timezone import now
 
 from cves.constants import PRODUCT_SEPARATOR
 from cves.views import CveListView, CveDetailView
 from cves.models import Vendor, Product, Cve, Weakness
 from opencve.pagination import keyset_cursor_payload, paginate_keyset
+from organizations.models import Membership
 from users.models import UserTag, CveTag
-from projects.models import CveComment, CveTracker
+from projects.models import CveComment, CveTracker, ProjectMembership
+from authorization.roles import PROJECT_ADMIN, PROJECT_CONTRIBUTOR, PROJECT_VIEWER
 
 
 def _vendor_names(soup):
@@ -582,8 +585,10 @@ def test_cve_detail_build_tags_context_authenticated_with_tags(
 
 
 @override_settings(ENABLE_ONBOARDING=False)
-def test_cve_detail_get_projects(db, create_user, create_organization, create_project):
-    """Test that get_projects returns only projects from the current organization."""
+def test_cve_detail_get_subscription_projects(
+    db, create_user, create_organization, create_project
+):
+    """Org owners see all active org projects for subscription management."""
     user = create_user()
     org1 = create_organization(name="org1", user=user)
     org2 = create_organization(name="org2", user=user)
@@ -598,7 +603,31 @@ def test_cve_detail_get_projects(db, create_user, create_organization, create_pr
     view = CveDetailView()
     view.request = request
 
-    projects = view.get_projects()
+    projects = view.get_subscription_projects()
+
+    assert list(projects) == [project1, project2]
+    assert project3 not in projects
+
+
+def test_cve_detail_get_accessible_projects(
+    db, create_user, create_organization, create_project
+):
+    """Org owners see all org projects as accessible."""
+    user = create_user()
+    org1 = create_organization(name="org1", user=user)
+    org2 = create_organization(name="org2", user=user)
+    project1 = create_project(name="project1", organization=org1)
+    project2 = create_project(name="project2", organization=org1)
+    project3 = create_project(name="project3", organization=org2)
+
+    rf = RequestFactory()
+    request = rf.get("/")
+    request.user = user
+    request.current_organization = org1
+    view = CveDetailView()
+    view.request = request
+
+    projects = view.get_accessible_projects()
 
     assert list(projects) == [project1, project2]
     assert project3 not in projects
@@ -860,6 +889,7 @@ def test_cve_detail_list_cve_projects(
     rf = RequestFactory()
     request = rf.get("/")
     request.user = user
+    request.current_organization = project1.organization
     view = CveDetailView()
     view.request = request
 
@@ -1002,8 +1032,6 @@ def test_cve_detail_get_context_data_authenticated(
     assert "enrichment_vendors_data" in context
     assert "enrichment_affected" in context
     assert "filtered_projects" in context
-    assert "filtered_projects" in context
-    assert "organization_members" in context
     assert "status_choices" in context
 
 

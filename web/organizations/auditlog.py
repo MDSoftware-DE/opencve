@@ -1,3 +1,4 @@
+import json
 from collections import defaultdict
 
 from django.apps import apps
@@ -10,7 +11,14 @@ from cves.constants import PRODUCT_SEPARATOR
 from opencve.constants import RESOURCE_LABELS
 from opencve.utils import normalize_pk_for_model, safe_load_json, get_resource_label
 from organizations.models import Membership, Organization, OrganizationAPIToken
-from projects.models import CveTracker, Notification, Project
+from projects.models import (
+    Automation,
+    CveComment,
+    CveTracker,
+    Notification,
+    Project,
+    ProjectMembership,
+)
 from views.models import View as SavedView
 
 # Fields to hide for all resources
@@ -21,12 +29,25 @@ FIELDS_ALWAYS_HIDDEN = frozenset({"updated_at"})
 # You can configure visibility per model (string key); applies to CREATE and DELETE.
 # If no entry is found, all fields (except FIELDS_ALWAYS_HIDDEN) are shown.
 DISPLAY_FIELDS_BY_RESOURCE_ACTION = {
+    "automation": (
+        "name",
+        "is_enabled",
+        "trigger_type",
+        "frequency",
+        "schedule_time",
+        "schedule_weekday",
+        "schedule_timezone",
+        "project",
+        "configuration",
+    ),
     "cvetracker": ("cve", "project", "assignee", "status"),
+    "cvecomment": ("body", "cve", "project", "author"),
     "membership": ("role", "email", "date_joined"),
     "organizationapitoken": ("name", "is_active", "description"),
     "view": ("name", "query", "privacy"),
     "notification": ("name", "type", "project", "is_enabled", "configuration"),
     "project": ("name", "active", "description", "subscriptions"),
+    "projectmembership": ("project", "role"),
     "organization": ("name",),
 }
 
@@ -39,6 +60,33 @@ def _membership_repr(obj):
     return "—"
 
 
+def _project_membership_repr(obj):
+    return _membership_repr(obj.membership)
+
+
+def _value_from_log_change(value):
+    """Extract the relevant scalar from an auditlog change value."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        if len(value) == 2:
+            return value[1] if value[1] not in (None, "") else value[0]
+        if len(value) == 1:
+            return value[0]
+    return value
+
+
+def _membership_id_from_log_entry(entry):
+    serialized = safe_load_json(getattr(entry, "serialized_data", None))
+    if isinstance(serialized, dict):
+        membership_id = (serialized.get("fields") or {}).get("membership")
+        if membership_id not in (None, ""):
+            return membership_id
+
+    changes = getattr(entry, "changes_dict", None) or {}
+    return _value_from_log_change(changes.get("membership"))
+
+
 def _name_repr(obj):
     return getattr(obj, "name", str(obj))
 
@@ -49,7 +97,9 @@ def _user_repr(obj):
 
 # (content_type.model) -> callable(obj) -> str for the "Target" column
 OBJECT_REPR_FUNCTIONS = {
+    "automation": _name_repr,
     "membership": _membership_repr,
+    "projectmembership": _project_membership_repr,
     "organizationapitoken": _name_repr,
     "view": _name_repr,
     "notification": _name_repr,
@@ -84,9 +134,42 @@ def _display_repr_for_same_content_type(ct_entries, content_type):
         qs = model_class.objects.filter(pk__in=pk_list)
         if model_name == "membership":
             qs = qs.select_related("user")
+        elif model_name == "projectmembership":
+            qs = qs.select_related("membership__user")
         objects = {obj.pk: obj for obj in qs}
     except Exception:
         return {e.id: e.object_repr for e in ct_entries}
+
+    entry_membership_ids = {}
+    if model_name == "projectmembership":
+        for entry in ct_entries:
+            try:
+                pk = normalize_pk_for_model(model_class, entry.object_pk)
+            except Exception:
+                continue
+            if pk not in objects:
+                membership_id = _membership_id_from_log_entry(entry)
+                if membership_id not in (None, ""):
+                    try:
+                        entry_membership_ids[entry.id] = normalize_pk_for_model(
+                            Membership, membership_id
+                        )
+                    except Exception:
+                        pass
+
+    memberships_by_pk = {}
+    if entry_membership_ids:
+        memberships_by_pk = {
+            m.pk: m
+            for m in Membership.objects.filter(
+                pk__in=set(entry_membership_ids.values())
+            ).select_related("user")
+        }
+
+    missing_membership_ids = set(entry_membership_ids.values()) - set(
+        memberships_by_pk.keys()
+    )
+    deleted_membership_repr = _membership_repr_from_deleted_ids(missing_membership_ids)
 
     # Map each entry to its display string
     result = {}
@@ -102,6 +185,19 @@ def _display_repr_for_same_content_type(ct_entries, content_type):
                 result[entry.id] = formatter(obj)
             except Exception:
                 result[entry.id] = entry.object_repr
+        elif model_name == "membership":
+            result[entry.id] = (
+                _membership_repr_from_log_entry(entry) or entry.object_repr
+            )
+        elif model_name == "projectmembership":
+            membership = memberships_by_pk.get(entry_membership_ids.get(entry.id))
+            if membership is not None:
+                result[entry.id] = _membership_repr(membership)
+            else:
+                mid = entry_membership_ids.get(entry.id)
+                result[entry.id] = (
+                    deleted_membership_repr.get(mid) if mid else None
+                ) or entry.object_repr
         else:
             result[entry.id] = entry.object_repr if obj is None else str(obj)
     return result
@@ -182,6 +278,14 @@ def _format_notification_configuration_value(raw_value):
     return "\n".join(lines)
 
 
+def _format_json_value(raw_value):
+    """Pretty-print JSON field values for audit log display."""
+    data = safe_load_json(raw_value)
+    if data is None:
+        return raw_value
+    return json.dumps(data, indent=2, sort_keys=True)
+
+
 def _format_notification_configuration_changes(before_raw, after_raw):
     """
     Produce two multi-line strings (before, after) containing ONLY the lines
@@ -239,6 +343,55 @@ def _resolve_user_id_to_display(user_id):
         )
     except Exception:
         return str(user_id)
+
+
+def _membership_repr_from_fields(fields):
+    if not fields:
+        return None
+    email = fields.get("email")
+    if email:
+        return email
+    user_id = fields.get("user")
+    if user_id not in (None, ""):
+        return _resolve_user_id_to_display(user_id)
+    return None
+
+
+def _membership_repr_from_log_entry(entry):
+    serialized = safe_load_json(getattr(entry, "serialized_data", None))
+    if isinstance(serialized, dict):
+        display = _membership_repr_from_fields(serialized.get("fields") or {})
+        if display:
+            return display
+
+    changes = getattr(entry, "changes_dict", None) or {}
+    email = _value_from_log_change(changes.get("email"))
+    if email:
+        return email
+    return None
+
+
+def _membership_repr_from_deleted_ids(membership_ids):
+    """Resolve member labels from audit log snapshots when Membership rows are gone."""
+    if not membership_ids:
+        return {}
+
+    result = {}
+    ct = ContentType.objects.get_for_model(Membership)
+    for log_entry in LogEntry.objects.filter(
+        content_type=ct,
+        object_pk__in=[str(pk) for pk in membership_ids],
+        serialized_data__isnull=False,
+    ).order_by("-timestamp"):
+        try:
+            pk = normalize_pk_for_model(Membership, log_entry.object_pk)
+        except Exception:
+            continue
+        if pk in membership_ids and pk not in result:
+            display = _membership_repr_from_log_entry(log_entry)
+            if display:
+                result[pk] = display
+    return result
 
 
 def _resolve_pair(before, after, resolver):
@@ -357,16 +510,40 @@ def get_displayable_changes(entry):
             )
             continue
 
+        elif model == "automation" and field_name == "configuration":
+            payload = {"is_json_configuration": True}
+            if action == 1 and after is not None:
+                payload["before"] = _format_json_value(before)
+                payload["after"] = _format_json_value(after)
+            elif action == 2:
+                payload["value"] = _format_json_value(before)
+            else:
+                payload["value"] = _format_json_value(
+                    after if after is not None else before
+                )
+            filtered[field_name] = payload
+            continue
+
         # Resolve FK IDs to human-readable names for display
         elif (
-            model == "notification" or model == "cvetracker"
+            model
+            in (
+                "notification",
+                "cvetracker",
+                "automation",
+                "cvecomment",
+                "projectmembership",
+            )
         ) and field_name == "project":
             before, after = _resolve_pair(before, after, _resolve_project_id_to_name)
 
-        elif model == "cvetracker" and field_name == "cve":
+        elif model in ("cvetracker", "cvecomment") and field_name == "cve":
             before, after = _resolve_pair(before, after, _resolve_cve_id_to_display)
 
         elif model == "cvetracker" and field_name == "assignee":
+            before, after = _resolve_pair(before, after, _resolve_user_id_to_display)
+
+        elif model == "cvecomment" and field_name == "author":
             before, after = _resolve_pair(before, after, _resolve_user_id_to_display)
 
         filtered[field_name] = [before, after] if after is not None else [before]
@@ -411,6 +588,24 @@ def get_organization_audit_log_pks(organization):
                 project__organization=organization
             ).values_list("pk", flat=True)
         ],
+        Automation: [
+            str(pk)
+            for pk in Automation.objects.filter(
+                project__organization=organization
+            ).values_list("pk", flat=True)
+        ],
+        CveComment: [
+            str(pk)
+            for pk in CveComment.objects.filter(
+                project__organization=organization
+            ).values_list("pk", flat=True)
+        ],
+        ProjectMembership: [
+            str(pk)
+            for pk in ProjectMembership.objects.filter(
+                project__organization=organization
+            ).values_list("pk", flat=True)
+        ],
     }
 
 
@@ -442,10 +637,16 @@ def extend_audit_log_pks_with_deleted(organization, pks_dict):
         if pk not in result[SavedView]:
             result[SavedView].append(pk)
 
-    # Notification and CveTracker are linked via project
+    # Notification, CveTracker, Automation, CveComment and ProjectMembership are linked via project
     project_ids = result[Project]
     if project_ids:
-        for model in (Notification, CveTracker):
+        for model in (
+            Notification,
+            CveTracker,
+            Automation,
+            CveComment,
+            ProjectMembership,
+        ):
             ct = ContentType.objects.get_for_model(model)
             for pk in LogEntry.objects.filter(
                 delete_q,

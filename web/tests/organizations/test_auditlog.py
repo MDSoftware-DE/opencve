@@ -4,12 +4,12 @@ from datetime import date, timedelta
 import pytest
 from auditlog.models import LogEntry
 from django.contrib.contenttypes.models import ContentType
+from django.utils.timezone import now
 
 from cves.constants import PRODUCT_SEPARATOR
 from organizations.auditlog import (
     DISPLAY_FIELDS_BY_RESOURCE_ACTION,
     FIELDS_ALWAYS_HIDDEN,
-    RESOURCE_LABELS,
     _build_project_subscriptions_change,
     _format_notification_configuration_changes,
     _format_notification_configuration_value,
@@ -28,8 +28,17 @@ from organizations.auditlog import (
     get_organization_audit_log_pks,
     get_resource_label,
 )
+from dashboards.models import Dashboard
 from organizations.models import Membership, Organization, OrganizationAPIToken
-from projects.models import CveTracker, Notification, Project
+from opencve.constants import RESOURCE_LABELS
+from projects.models import (
+    Automation,
+    CveComment,
+    CveTracker,
+    Notification,
+    Project,
+    ProjectMembership,
+)
 from views.models import View as SavedView
 
 
@@ -39,6 +48,7 @@ from views.models import View as SavedView
 
 
 def test_format_notification_configuration_value_happy_path():
+    """Format notification configuration with all known keys into readable text."""
     raw = {
         "extras": {
             "email": "user@example.com",
@@ -58,12 +68,14 @@ def test_format_notification_configuration_value_happy_path():
 
 
 def test_format_notification_configuration_value_no_known_keys_returns_raw():
+    """Return raw JSON when notification configuration has no known keys."""
     raw = {"foo": "bar"}
     dumped = json.dumps(raw)
     assert _format_notification_configuration_value(dumped) == dumped
 
 
 def test_format_notification_configuration_changes_only_diff_lines():
+    """Include only differing lines in notification configuration summaries."""
     before = {
         "extras": {"email": "a@example.com"},
         "types": ["a"],
@@ -89,6 +101,7 @@ def test_format_notification_configuration_changes_only_diff_lines():
 
 
 def test_normalize_subscriptions_payload_accepts_various_input_shapes():
+    """Normalize project subscriptions vendors and products from JSON payloads."""
     data = {
         "vendors": ["v2", "v1", "v1"],
         "products": [
@@ -104,6 +117,7 @@ def test_normalize_subscriptions_payload_accepts_various_input_shapes():
 
 
 def test_build_project_subscriptions_change_diff_structure():
+    """Build before/after and diff structure for project subscription changes."""
     before = {
         "vendors": ["v1"],
         "products": ["p1"],
@@ -131,6 +145,7 @@ def test_build_project_subscriptions_change_diff_structure():
 def test_resolve_project_cve_and_user_ids(
     create_user, create_organization, create_project, create_cve
 ):
+    """Resolve project, CVE, and user IDs to human-readable display values."""
     user = create_user(username="u1", email="u1@example.com")
     org = create_organization(name="org1", user=user)
     project = create_project(name="p1", organization=org)
@@ -147,6 +162,8 @@ def test_resolve_project_cve_and_user_ids(
 
 
 def test_resolve_pair_applies_resolver_conditionally():
+    """Apply resolver to before/after values while preserving empty values."""
+
     def resolver(v):
         return f"r-{v}"
 
@@ -171,6 +188,7 @@ class DummyEntry:
 
 @pytest.mark.django_db
 def test_get_displayable_changes_filters_and_formats_notification_configuration():
+    """Format notification configuration updates with a before/after diff summary."""
     ct = ContentType.objects.get_for_model(Notification)
     before = {
         "extras": {"email": "a@example.com"},
@@ -202,6 +220,7 @@ def test_get_displayable_changes_filters_and_formats_notification_configuration(
 
 @pytest.mark.django_db
 def test_get_displayable_changes_project_subscriptions_and_hidden_fields():
+    """Format project subscriptions and hide fields marked as always hidden."""
     ct = ContentType.objects.get_for_model(Project)
     changes = {
         "subscriptions": [
@@ -228,6 +247,7 @@ def test_get_displayable_changes_project_subscriptions_and_hidden_fields():
 
 @pytest.mark.django_db
 def test_get_displayable_changes_respects_display_fields_by_resource_action():
+    """Expose only fields configured for the resource in displayable changes."""
     ct = ContentType.objects.get_for_model(Project)
     allowed_fields = DISPLAY_FIELDS_BY_RESOURCE_ACTION["project"]
     changes = {name: ["before", "after"] for name in allowed_fields}
@@ -242,6 +262,121 @@ def test_get_displayable_changes_respects_display_fields_by_resource_action():
     for name in allowed_fields:
         assert name in result
     assert "ignored" not in result
+
+
+@pytest.mark.django_db
+def test_get_displayable_changes_automation_project_and_configuration(
+    create_user, create_organization, create_project, create_automation
+):
+    """Resolve automation project FKs and format configuration as indented JSON."""
+    user = create_user(username="u1")
+    org = create_organization(name="org1", user=user)
+    project = create_project(name="p1", organization=org)
+    create_automation(name="my-alert", project=project)
+
+    ct = ContentType.objects.get_for_model(Automation)
+    config = {"conditions": {"operator": "OR", "children": []}, "actions": []}
+    entry = DummyEntry(
+        changes_dict={
+            "project": [None, str(project.pk)],
+            "configuration": [
+                json.dumps(config),
+                json.dumps({**config, "actions": [{"type": "email"}]}),
+            ],
+        },
+        content_type=ct,
+        action=LogEntry.Action.UPDATE,
+    )
+
+    result = get_displayable_changes(entry)
+    assert result["project"] == [None, "p1"]
+    config_display = result["configuration"]
+    assert config_display["is_json_configuration"] is True
+    assert '"actions"' in config_display["before"]
+    assert "email" in config_display["after"]
+    assert "\n" in config_display["after"]
+
+
+@pytest.mark.django_db
+def test_get_displayable_changes_cvecomment_resolves_fk_fields(
+    create_user, create_organization, create_project, create_cve
+):
+    """Resolve CVE comment FK fields and exclude the edited flag from display."""
+    user = create_user(username="u1")
+    org = create_organization(name="org1", user=user)
+    project = create_project(name="p1", organization=org)
+    cve = create_cve("CVE-2021-34181")
+    comment = CveComment.objects.create(
+        body="Initial comment",
+        cve=cve,
+        project=project,
+        author=user,
+    )
+
+    ct = ContentType.objects.get_for_model(CveComment)
+    entry = DummyEntry(
+        changes_dict={
+            "body": ["Initial comment", "Updated comment"],
+            "cve": [str(cve.pk), str(cve.pk)],
+            "project": [str(project.pk), str(project.pk)],
+            "author": [str(user.pk), str(user.pk)],
+            "edited": [False, True],
+        },
+        content_type=ct,
+        action=LogEntry.Action.UPDATE,
+    )
+
+    result = get_displayable_changes(entry)
+    assert result["body"] == ["Initial comment", "Updated comment"]
+    assert result["cve"] == ["CVE-2021-34181", "CVE-2021-34181"]
+    assert result["project"] == ["p1", "p1"]
+    assert result["author"] == [user.username, user.username]
+    assert "edited" not in result
+
+    display = get_display_object_repr_for_entries(
+        [
+            LogEntry.objects.create(
+                content_type=ct,
+                object_pk=str(comment.pk),
+                object_repr=str(comment),
+                actor=user,
+                action=LogEntry.Action.UPDATE,
+            )
+        ]
+    )
+    assert display
+    assert next(iter(display.values())) == "CVE-2021-34181"
+
+
+@pytest.mark.django_db
+def test_cvecomment_delete_display_object_repr_uses_cve_id(
+    create_user, create_organization, create_project, create_cve
+):
+    """Show CVE ID in the target column when a CVE comment is deleted."""
+    user = create_user(username="u1")
+    org = create_organization(name="org1", user=user)
+    project = create_project(name="p1", organization=org)
+    cve = create_cve("CVE-2021-34181")
+    comment = CveComment.objects.create(
+        body="To be deleted",
+        cve=cve,
+        project=project,
+        author=user,
+    )
+    comment_pk = str(comment.pk)
+    comment.delete()
+
+    ct = ContentType.objects.get_for_model(CveComment)
+    delete_entry = LogEntry.objects.filter(
+        content_type=ct,
+        object_pk=comment_pk,
+        action=LogEntry.Action.DELETE,
+    ).latest("timestamp")
+
+    assert (
+        get_display_object_repr_for_entries([delete_entry])[delete_entry.id]
+        == "CVE-2021-34181"
+    )
 
 
 #
@@ -262,6 +397,7 @@ def _create_log_entry_for_obj(obj, object_repr=None, actor=None, action=None):
 def test_get_display_object_repr_for_entries_uses_model_specific_formatters(
     create_user, create_organization, create_project
 ):
+    """Use model-specific formatters for audit log entry target display."""
     user = create_user(username="john", email="john@example.com")
     org = create_organization(name="org1", user=user)
     project = create_project(name="project1", organization=org)
@@ -284,7 +420,186 @@ def test_get_display_object_repr_for_entries_uses_model_specific_formatters(
 
 
 @pytest.mark.django_db
+def test_get_display_object_repr_for_entries_project_membership(
+    create_user, create_organization, create_project
+):
+    """Project membership target uses the org member email or username."""
+    owner = create_user(username="owner", email="owner@example.com")
+    org = create_organization(name="org1", user=owner)
+    project = create_project(name="alpha", organization=org)
+
+    member = create_user(username="alice", email="alice@example.com")
+    membership = Membership.objects.create(
+        user=member,
+        organization=org,
+        role=Membership.MEMBER,
+        date_invited=now(),
+        date_joined=now(),
+    )
+    project_membership = ProjectMembership.objects.create(
+        project=project,
+        membership=membership,
+        role=ProjectMembership.CONTRIBUTOR,
+    )
+
+    entry = _create_log_entry_for_obj(
+        project_membership, object_repr=str(project_membership)
+    )
+    mapping = get_display_object_repr_for_entries([entry])
+
+    assert mapping[entry.id] in {member.email, member.username}
+
+
+@pytest.mark.django_db
+def test_get_displayable_changes_projectmembership(
+    create_user, create_organization, create_project
+):
+    """Show project name and role only for project membership audit entries."""
+    owner = create_user(username="owner", email="owner@example.com")
+    org = create_organization(name="org1", user=owner)
+    project = create_project(name="alpha", organization=org)
+
+    member = create_user(username="alice", email="alice@example.com")
+    membership = Membership.objects.create(
+        user=member,
+        organization=org,
+        role=Membership.MEMBER,
+        date_invited=now(),
+        date_joined=now(),
+    )
+    project_membership = ProjectMembership.objects.create(
+        project=project,
+        membership=membership,
+        role=ProjectMembership.CONTRIBUTOR,
+    )
+
+    ct = ContentType.objects.get_for_model(ProjectMembership)
+    entry = DummyEntry(
+        changes_dict={
+            "role": [None, ProjectMembership.CONTRIBUTOR],
+            "project": [None, str(project.pk)],
+            "membership": [None, str(membership.pk)],
+        },
+        content_type=ct,
+        action=LogEntry.Action.CREATE,
+    )
+
+    result = get_displayable_changes(entry)
+    assert result["role"] == [None, ProjectMembership.CONTRIBUTOR]
+    assert result["project"] == [None, "alpha"]
+    assert "membership" not in result
+
+
+@pytest.mark.django_db
+def test_projectmembership_delete_display_object_repr_uses_member_name(
+    create_user, create_organization, create_project
+):
+    """Show member email/username when a deleted project membership is logged."""
+    owner = create_user(username="owner", email="owner@example.com")
+    org = create_organization(name="org1", user=owner)
+    project = create_project(name="alpha", organization=org)
+
+    member = create_user(username="alice", email="alice@example.com")
+    membership = Membership.objects.create(
+        user=member,
+        organization=org,
+        role=Membership.MEMBER,
+        date_invited=now(),
+        date_joined=now(),
+    )
+    project_membership = ProjectMembership.objects.create(
+        project=project,
+        membership=membership,
+        role=ProjectMembership.VIEWER,
+    )
+    pm_pk = str(project_membership.pk)
+    project_membership.delete()
+
+    pm_ct = ContentType.objects.get_for_model(ProjectMembership)
+    delete_entry = LogEntry.objects.filter(
+        content_type=pm_ct,
+        object_pk=pm_pk,
+        action=LogEntry.Action.DELETE,
+    ).latest("timestamp")
+    create_entry = LogEntry.objects.filter(
+        content_type=pm_ct,
+        object_pk=pm_pk,
+        action=LogEntry.Action.CREATE,
+    ).latest("timestamp")
+
+    mapping = get_display_object_repr_for_entries([delete_entry, create_entry])
+    expected = member.username
+    assert mapping[delete_entry.id] == expected
+    assert mapping[create_entry.id] == expected
+
+
+@pytest.mark.django_db
+def test_membership_delete_display_object_repr_uses_member_name(
+    create_user, create_organization
+):
+    """Show member email/username when an organization membership is deleted."""
+    owner = create_user(username="owner", email="owner@example.com")
+    org = create_organization(name="org1", user=owner)
+
+    member = create_user(username="alice", email="alice@example.com")
+    membership = Membership.objects.create(
+        user=member,
+        organization=org,
+        role=Membership.MEMBER,
+        date_invited=now(),
+        date_joined=now(),
+    )
+    membership_pk = str(membership.pk)
+    membership.delete()
+
+    membership_ct = ContentType.objects.get_for_model(Membership)
+    delete_entry = LogEntry.objects.filter(
+        content_type=membership_ct,
+        object_pk=membership_pk,
+        action=LogEntry.Action.DELETE,
+    ).latest("timestamp")
+
+    mapping = get_display_object_repr_for_entries([delete_entry])
+    assert mapping[delete_entry.id] == "alice"
+
+
+@pytest.mark.django_db
+def test_projectmembership_logs_keep_member_name_after_org_membership_deleted(
+    create_user, create_organization, create_project
+):
+    """Project membership audit rows still show the user after org membership removal."""
+    owner = create_user(username="owner", email="owner@example.com")
+    org = create_organization(name="org1", user=owner)
+    project = create_project(name="alpha", organization=org)
+
+    member = create_user(username="alice", email="alice@example.com")
+    membership = Membership.objects.create(
+        user=member,
+        organization=org,
+        role=Membership.MEMBER,
+        date_invited=now(),
+        date_joined=now(),
+    )
+    ProjectMembership.objects.create(
+        project=project,
+        membership=membership,
+        role=ProjectMembership.VIEWER,
+    )
+    membership.delete()
+
+    pm_ct = ContentType.objects.get_for_model(ProjectMembership)
+    pm_entries = LogEntry.objects.filter(content_type=pm_ct).order_by("timestamp")
+    mapping = get_display_object_repr_for_entries(list(pm_entries))
+
+    assert pm_entries.exists()
+    for entry in pm_entries:
+        assert mapping[entry.id] == "alice"
+
+
+@pytest.mark.django_db
 def test_get_display_object_repr_for_entries_fallback_on_missing_content_type():
+    """Fall back to object_repr when the log entry content type is missing."""
+
     class DummyEntryForMissingCT:
         def __init__(self):
             self.id = 1
@@ -308,7 +623,9 @@ def test_get_organization_audit_log_pks_uses_related_objects(
     create_notification,
     create_view,
     create_cve,
+    create_automation,
 ):
+    """Collect PKs for all organization-related objects included in the audit log."""
     user = create_user(username="u1")
     org = create_organization(name="org1", user=user)
     token = OrganizationAPIToken.objects.create(
@@ -326,6 +643,13 @@ def test_get_organization_audit_log_pks_uses_related_objects(
         cve=cve,
         status="to_evaluate",
     )
+    automation = create_automation(name="my-alert", project=project)
+    comment = CveComment.objects.create(
+        body="Looks important",
+        cve=cve,
+        project=project,
+        author=user,
+    )
 
     pks = get_organization_audit_log_pks(org)
     assert str(org.pk) in pks[Organization]
@@ -337,11 +661,15 @@ def test_get_organization_audit_log_pks_uses_related_objects(
     assert str(notif.pk) in pks[Notification]
     assert str(saved_view.pk) in pks[SavedView]
     assert str(cve_tracker.pk) in pks[CveTracker]
+    assert str(automation.pk) in pks[Automation]
+    assert str(comment.pk) in pks[CveComment]
+    assert Dashboard not in pks
 
 
 def test_extend_audit_log_pks_with_deleted_adds_deleted_objects(
     create_user, create_organization, create_project, create_notification
 ):
+    """Add deleted object PKs from serialized audit log data to the org scope."""
     user = create_user(username="u1")
     org = create_organization(name="org1", user=user)
     project = create_project(name="p1", organization=org)
@@ -352,6 +680,9 @@ def test_extend_audit_log_pks_with_deleted_adds_deleted_objects(
     org_ct = ContentType.objects.get_for_model(Organization)
     project_ct = ContentType.objects.get_for_model(Project)
     notif_ct = ContentType.objects.get_for_model(Notification)
+    automation_ct = ContentType.objects.get_for_model(Automation)
+    cvecomment_ct = ContentType.objects.get_for_model(CveComment)
+    pm_ct = ContentType.objects.get_for_model(ProjectMembership)
 
     # Deleted project and notification via project FK
     LogEntry.objects.create(
@@ -370,10 +701,37 @@ def test_extend_audit_log_pks_with_deleted_adds_deleted_objects(
         action=LogEntry.Action.DELETE,
         serialized_data={"fields": {"project": str(project.pk)}},
     )
+    LogEntry.objects.create(
+        content_type=automation_ct,
+        object_pk="666",
+        object_repr="deleted automation",
+        actor=None,
+        action=LogEntry.Action.DELETE,
+        serialized_data={"fields": {"project": str(project.pk)}},
+    )
+    LogEntry.objects.create(
+        content_type=cvecomment_ct,
+        object_pk="555",
+        object_repr="deleted comment",
+        actor=None,
+        action=LogEntry.Action.DELETE,
+        serialized_data={"fields": {"project": str(project.pk)}},
+    )
+    LogEntry.objects.create(
+        content_type=pm_ct,
+        object_pk="444",
+        object_repr="deleted project membership",
+        actor=None,
+        action=LogEntry.Action.DELETE,
+        serialized_data={"fields": {"project": str(project.pk)}},
+    )
 
     extended = extend_audit_log_pks_with_deleted(org, base_pks)
     assert "888" in extended[Project]
     assert "777" in extended[Notification]
+    assert "666" in extended[Automation]
+    assert "555" in extended[CveComment]
+    assert "444" in extended[ProjectMembership]
     # Original dict must not be mutated
 
     # Silence unused variable if fixture is not used in logic above
@@ -383,6 +741,7 @@ def test_extend_audit_log_pks_with_deleted_adds_deleted_objects(
 def test_build_audit_log_queryset_returns_expected_entries(
     create_user, create_organization
 ):
+    """Build a queryset containing log entries for the given organization PKs."""
     user = create_user(username="u1")
     org = create_organization(name="org1", user=user)
     pks = get_organization_audit_log_pks(org)
@@ -413,6 +772,7 @@ def test_build_audit_log_queryset_returns_expected_entries(
 def test_get_audit_log_filter_choices_and_apply_filters(
     create_user, create_organization
 ):
+    """Build filter choices and apply user, resource, action, and date filters."""
     user1 = create_user(username="u1")
     user2 = create_user(username="u2")
     org = create_organization(name="org1", user=user1)
@@ -489,6 +849,7 @@ def test_get_audit_log_filter_choices_and_apply_filters(
 def test_get_audit_log_display_data_includes_changes_and_object_repr(
     create_user, create_organization
 ):
+    """Return display changes, object repr, and resource label for each entry."""
     user = create_user(username="u1")
     org = create_organization(name="org1", user=user)
     ct_org = ContentType.objects.get_for_model(Organization)
@@ -521,6 +882,7 @@ def test_get_audit_log_display_data_includes_changes_and_object_repr(
 def test_integration_build_queryset_filters_and_display_data(
     create_user, create_organization
 ):
+    """Integrate queryset building, filtering, and display data for org audit logs."""
     user = create_user(username="u1")
     org = create_organization(name="org1", user=user)
     pks = get_organization_audit_log_pks(org)

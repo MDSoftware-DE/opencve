@@ -13,6 +13,7 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 
+from authorization.helpers import assignable_tracker_users
 from changes.models import Change, Report
 from cves.models import Cve
 from cves.search import (
@@ -29,27 +30,32 @@ from opencve.api.v2.openapi import (
     AUTOMATION_EXECUTION_DETAIL_RESPONSE_EXAMPLE,
     AUTOMATION_UPDATE_REQUEST_EXAMPLE,
     AUTOMATION_UPDATE_RESPONSE_EXAMPLE,
+    AUTOMATIONS_TAG,
     NOTIFICATION_CREATE_REQUEST_EXAMPLE,
     NOTIFICATION_RESPONSE_EXAMPLE,
     NOTIFICATION_UPDATE_REQUEST_EXAMPLE,
+    NOTIFICATIONS_TAG,
     ORG_PATH_PARAMS,
     ORG_PROJECT_AUTOMATION_PATH_PARAMS,
     ORG_PROJECT_CVE_PATH_PARAMS,
     ORG_PROJECT_PATH_PARAMS,
     ORG_PROJECT_REPORT_PATH_PARAMS,
-    PROJECT_CVE_DETAIL_RESPONSE_EXAMPLE,
-    PROJECT_CVE_TRACKER_UPDATE_REQUEST_EXAMPLE,
-    PROJECTS_TAG,
     PROJECT_CREATE_EXAMPLE,
     PROJECT_CREATE_RESPONSE_EXAMPLE,
+    PROJECT_CVE_DETAIL_RESPONSE_EXAMPLE,
+    PROJECT_CVE_TRACKER_UPDATE_REQUEST_EXAMPLE,
     PROJECT_DETAIL_RESPONSE_EXAMPLE,
     PROJECT_UPDATE_EXAMPLE,
+    PROJECTS_TAG,
     REPORT_DETAIL_RESPONSE_EXAMPLE,
     REPORT_LIST_ITEM_EXAMPLE,
+    REPORTS_TAG,
     SUBSCRIPTION_CREATE_REQUEST_EXAMPLE,
     SUBSCRIPTION_DELETE_QUERY_PARAMS,
     SUBSCRIPTION_LIST_RESPONSE_EXAMPLE,
     SUBSCRIPTION_REPLACE_REQUEST_EXAMPLE,
+    SUBSCRIPTIONS_TAG,
+    TRACKER_TAG,
 )
 from opencve.api.v2.serializers import (
     AutomationExecutionDetailSerializer,
@@ -230,7 +236,7 @@ class ProjectViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ModelViewSet):
         return Response(data)
 
 
-@extend_schema(tags=[PROJECTS_TAG])
+@extend_schema(tags=[SUBSCRIPTIONS_TAG])
 @extend_schema(parameters=ORG_PROJECT_PATH_PARAMS)
 @extend_schema_view(
     create=extend_schema(
@@ -264,7 +270,7 @@ class ProjectSubscriptionViewSet(
     queryset = Project.objects.none()
     pagination_class = None
     scope_map = {
-        "list": APIScope.PROJECTS_READ,
+        "list": APIScope.SUBSCRIPTIONS_READ,
         "create": APIScope.SUBSCRIPTIONS_WRITE,
         "update": APIScope.SUBSCRIPTIONS_WRITE,
         "destroy": APIScope.SUBSCRIPTIONS_WRITE,
@@ -336,7 +342,7 @@ class ProjectSubscriptionViewSet(
         return self._subscriptions_response(project)
 
 
-@extend_schema(tags=[PROJECTS_TAG])
+@extend_schema(tags=[TRACKER_TAG])
 @extend_schema(parameters=ORG_PROJECT_PATH_PARAMS)
 @extend_schema_view(
     list=extend_schema(summary="List CVEs tracked by a project."),
@@ -346,7 +352,7 @@ class ProjectCveViewSet(
 ):
     queryset = Cve.objects.none()
     scope_map = {
-        "list": APIScope.PROJECTS_READ,
+        "list": APIScope.TRACKER_READ,
     }
 
     def get_queryset(self):
@@ -430,13 +436,13 @@ class ProjectCveViewSet(
 @extend_schema_view(
     retrieve=extend_schema(
         summary="Retrieve a CVE tracked by a project.",
-        tags=[PROJECTS_TAG],
+        tags=[TRACKER_TAG],
         responses={200: ProjectCveSerializer},
         examples=[PROJECT_CVE_DETAIL_RESPONSE_EXAMPLE],
     ),
     partial_update=extend_schema(
         summary="Update CVE tracker fields for a project.",
-        tags=[PROJECTS_TAG],
+        tags=[TRACKER_TAG],
         request=CveTrackerUpdateSerializer,
         responses={200: ProjectCveSerializer},
         examples=[
@@ -449,7 +455,7 @@ class ProjectCveDetailViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ViewSet
     serializer_class = ProjectCveSerializer
     queryset = Cve.objects.none()
     scope_map = {
-        "retrieve": APIScope.PROJECTS_READ,
+        "retrieve": APIScope.TRACKER_READ,
         "partial_update": APIScope.TRACKER_WRITE,
         "tracking": APIScope.TRACKER_WRITE,
     }
@@ -499,6 +505,13 @@ class ProjectCveDetailViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ViewSet
                     membership__organization=project.organization,
                     membership__date_joined__isnull=False,
                 )
+                assignable_emails = set(
+                    assignable_tracker_users(project.organization, project).values_list(
+                        "email", flat=True
+                    )
+                )
+                if assignee_user.email not in assignable_emails:
+                    raise ValidationError({"assignee": "Invalid assignee."})
 
         tracker = CveTracker.update_tracker(
             project=project,
@@ -603,7 +616,7 @@ class ProjectCveDetailViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ViewSet
         return Response(self._tracking_acknowledgement(event, True))
 
 
-@extend_schema(parameters=ORG_PROJECT_PATH_PARAMS, tags=[PROJECTS_TAG])
+@extend_schema(parameters=ORG_PROJECT_PATH_PARAMS, tags=[NOTIFICATIONS_TAG])
 @extend_schema_view(
     list=extend_schema(summary="List notifications for a project."),
     create=extend_schema(
@@ -638,8 +651,8 @@ class NotificationViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ModelViewSe
     lookup_url_kwarg = "notification_name"
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
     scope_map = {
-        "list": APIScope.PROJECTS_READ,
-        "retrieve": APIScope.PROJECTS_READ,
+        "list": APIScope.NOTIFICATIONS_READ,
+        "retrieve": APIScope.NOTIFICATIONS_READ,
         "create": APIScope.NOTIFICATIONS_WRITE,
         "partial_update": APIScope.NOTIFICATIONS_WRITE,
         "destroy": APIScope.NOTIFICATIONS_WRITE,
@@ -730,7 +743,7 @@ class NotificationViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ModelViewSe
             send_notification_confirmation_email(notification, self.request)
 
 
-@extend_schema(tags=[PROJECTS_TAG])
+@extend_schema(tags=[AUTOMATIONS_TAG])
 @extend_schema(parameters=ORG_PROJECT_PATH_PARAMS)
 @extend_schema_view(
     list=extend_schema(summary="List automations for a project."),
@@ -764,8 +777,8 @@ class AutomationViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ModelViewSet)
     queryset = Automation.objects.none()
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
     scope_map = {
-        "list": APIScope.PROJECTS_READ,
-        "retrieve": APIScope.PROJECTS_READ,
+        "list": APIScope.AUTOMATIONS_READ,
+        "retrieve": APIScope.AUTOMATIONS_READ,
         "create": APIScope.AUTOMATIONS_WRITE,
         "partial_update": APIScope.AUTOMATIONS_WRITE,
         "destroy": APIScope.AUTOMATIONS_WRITE,
@@ -830,7 +843,7 @@ class AutomationViewSet(ViewSetMixin, ProjectScopedMixin, viewsets.ModelViewSet)
         return Response(AutomationSerializer(instance).data)
 
 
-@extend_schema(tags=[PROJECTS_TAG])
+@extend_schema(tags=[AUTOMATIONS_TAG])
 @extend_schema(parameters=ORG_PROJECT_AUTOMATION_PATH_PARAMS)
 @extend_schema_view(
     list=extend_schema(summary="List execution history for an automation."),
@@ -848,8 +861,8 @@ class AutomationExecutionViewSet(
     lookup_field = "id"
     lookup_url_kwarg = "execution_id"
     scope_map = {
-        "list": APIScope.PROJECTS_READ,
-        "retrieve": APIScope.PROJECTS_READ,
+        "list": APIScope.AUTOMATIONS_READ,
+        "retrieve": APIScope.AUTOMATIONS_READ,
     }
 
     def _automation_name(self):
@@ -884,7 +897,7 @@ class AutomationExecutionViewSet(
         return Response(data)
 
 
-@extend_schema(tags=[PROJECTS_TAG])
+@extend_schema(tags=[REPORTS_TAG])
 @extend_schema(parameters=ORG_PROJECT_PATH_PARAMS)
 @extend_schema_view(
     list=extend_schema(

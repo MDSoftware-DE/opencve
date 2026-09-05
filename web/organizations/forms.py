@@ -24,6 +24,7 @@ class OrganizationForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         self.request = kwargs.pop("request")
+        read_only = kwargs.pop("read_only", False)
         super(OrganizationForm, self).__init__(*args, **kwargs)
 
         # Add help text to name field only when editing
@@ -32,14 +33,19 @@ class OrganizationForm(forms.ModelForm):
                 "Renaming the organization will break any external links to it, as the URL changes."
             )
 
+        if read_only:
+            self.fields["name"].disabled = True
+
         self.helper = FormHelper()
-        self.helper.layout = Layout(
-            "name",
-            FormActions(
-                Submit("save", "Save"),
-                css_class="pull-right",
-            ),
-        )
+        layout_fields = ["name"]
+        if not read_only:
+            layout_fields.append(
+                FormActions(
+                    Submit("save", "Save"),
+                    css_class="pull-right",
+                )
+            )
+        self.helper.layout = Layout(*layout_fields)
 
     def clean_name(self):
         name = self.cleaned_data["name"]
@@ -53,21 +59,46 @@ class OrganizationForm(forms.ModelForm):
 
 class MembershipForm(forms.Form):
     email = forms.EmailField(label="Email")
-    role = forms.ChoiceField(choices=Membership.ROLES)
+    role = forms.ChoiceField(choices=[])
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, actor_membership=None, **kwargs):
         super(MembershipForm, self).__init__(*args, **kwargs)
+        from authorization.registry import RoleRegistry
+
+        self.fields["role"].choices = [("", "Select a role...")] + list(
+            RoleRegistry.get_org_role_choices(
+                actor_membership=actor_membership,
+                include_summary=True,
+            )
+        )
+        self.fields["role"].widget.attrs[
+            "class"
+        ] = "form-control select2-new-member-role"
         self.fields["email"].widget.attrs["placeholder"] = self.fields["email"].label
         self.helper = FormHelper()
         self.helper.form_show_labels = False
         self.helper.layout = Layout(
-            Div(Field("email"), css_class="col-md-6"),
-            Div(Field("role"), css_class="col-md-4"),
             Div(
-                FormActions(
-                    Submit("save", "Add"),
+                Div(Field("email"), css_class="col-md-5"),
+                Div(Field("role"), css_class="col-md-5"),
+                Div(
+                    FormActions(
+                        Submit("save", "Add"),
+                    ),
+                    css_class="col-md-2",
                 ),
-                css_class="col-md-2",
+                css_class="row",
+            ),
+            Div(
+                Div(
+                    HTML(
+                        '<p class="help-block">Learn about organization and project roles in the '
+                        '<a href="https://docs.opencve.io/guides/access_control/" '
+                        'target="_blank" rel="noopener">Access Control guide</a>.</p>'
+                    ),
+                    css_class="col-md-12",
+                ),
+                css_class="row new-member-role-help",
             ),
         )
 

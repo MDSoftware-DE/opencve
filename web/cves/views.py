@@ -31,6 +31,13 @@ from opencve.pagination import (
     paginate_keyset,
     parse_keyset_cursor,
 )
+from authorization.helpers import assignable_tracker_users
+from authorization.permissions import PROJECT_SUBSCRIPTIONS_MANAGE
+from authorization.querysets import (
+    accessible_projects,
+    subscription_manageable_projects,
+)
+from authorization.view_helpers import check_project_permission
 from organizations.mixins import OrganizationRequiredMixin
 from projects.models import Project, CveComment, CveTracker
 from projects.services.subscriptions import subscribe_project, unsubscribe_project
@@ -340,10 +347,15 @@ class CveDetailView(DetailView):
             "cve_tags_encoded": encoded,
         }
 
-    def get_projects(self):
-        return Project.objects.filter(
-            organization=self.request.current_organization
-        ).order_by("name")
+    def get_subscription_projects(self):
+        """Active projects where the user may manage vendor/product subscriptions."""
+        return subscription_manageable_projects(
+            self.request.user, self.request.current_organization
+        )
+
+    def get_accessible_projects(self):
+        """Projects the user is allowed to view (tracking, etc.)."""
+        return accessible_projects(self.request.user, self.request.current_organization)
 
     def serialize_projects(self, projects):
         return json.dumps(
@@ -482,6 +494,9 @@ class CveDetailView(DetailView):
                     "tracker": trackers_by_project.get(project.id),
                     "comments": threaded_comments,
                     "comment_count": total_comments,
+                    "assignable_members": assignable_tracker_users(
+                        self.request.current_organization, project
+                    ),
                 }
             )
 
@@ -516,11 +531,13 @@ class CveDetailView(DetailView):
 
         # Projects + subscription counts
         if self.request.user.is_authenticated and self.request.current_organization:
-            projects = self.get_projects()
-            context["projects"] = projects
-            context["projects_json"] = self.serialize_projects(projects)
+            subscription_projects = self.get_subscription_projects()
+            context["projects"] = subscription_projects
+            context["projects_json"] = self.serialize_projects(subscription_projects)
 
-            subscription_counts = self.compute_subscription_counts(projects)
+            subscription_counts = self.compute_subscription_counts(
+                subscription_projects
+            )
             context["vendors_data"] = self.build_vendors_data(
                 context["vendors"], subscription_counts
             )
@@ -528,10 +545,8 @@ class CveDetailView(DetailView):
                 context["enrichment_vendors"], subscription_counts
             )
 
-            context["filtered_projects"] = self.list_cve_projects(cve, projects)
-            context["organization_members"] = (
-                self.request.current_organization.get_members(active=True)
-            )
+            accessible = self.get_accessible_projects()
+            context["filtered_projects"] = self.list_cve_projects(cve, accessible)
             context["status_choices"] = CveTracker.STATUS_CHOICES
 
         return context
@@ -590,11 +605,9 @@ class SubscriptionView(LoginRequiredMixin, OrganizationRequiredMixin, TemplateVi
                 "object": obj,
                 "object_type": obj_type,
                 "object_name": obj_name,
-                "projects": Project.objects.filter(
-                    organization=self.request.current_organization
-                )
-                .order_by("name")
-                .all(),
+                "projects": subscription_manageable_projects(
+                    self.request.user, self.request.current_organization
+                ),
             }
         )
 
@@ -615,10 +628,22 @@ class SubscriptionView(LoginRequiredMixin, OrganizationRequiredMixin, TemplateVi
         ):
             raise Http404()
 
-        # Check if the project belongs to the current organization
         project = get_object_or_404(
-            Project, id=project_id, organization=request.current_organization
+            Project,
+            id=project_id,
+            organization=request.current_organization,
+            active=True,
         )
+        if (
+            not subscription_manageable_projects(
+                request.user, request.current_organization
+            )
+            .filter(pk=project.pk)
+            .exists()
+        ):
+            raise Http404()
+
+        check_project_permission(request, project, PROJECT_SUBSCRIPTIONS_MANAGE)
 
         if obj_type == "vendor":
             vendor = get_object_or_404(Vendor, id=obj_id)
